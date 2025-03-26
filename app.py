@@ -17,16 +17,18 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
     max_num_hands=2,
-    min_detection_confidence=0.8,
-    min_tracking_confidence=0.8
+    min_detection_confidence=0.6,
+    min_tracking_confidence=0.6
 )
 mp_drawing = mp.solutions.drawing_utils
 
-# Custom drawing specs for better skeleton visibility
-LANDMARK_COLOR = (255, 0, 0)  # Bright red for landmarks
-CONNECTION_COLOR = (0, 255, 0)  # Bright green for connections
-LANDMARK_THICKNESS = 4  # Thicker dots
-CONNECTION_THICKNESS = 2  # Thicker lines
+# Custom drawing specs with smaller nodes
+LANDMARK_COLOR_HAND_0 = (255, 0, 0)    # Red for hand 0
+LANDMARK_COLOR_HAND_1 = (0, 0, 255)    # Blue for hand 1
+CONNECTION_COLOR_HAND_0 = (0, 255, 0)  # Green for hand 0
+CONNECTION_COLOR_HAND_1 = (255, 255, 0) # Yellow for hand 1
+LANDMARK_THICKNESS = 2                 # Smaller for less overlap
+CONNECTION_THICKNESS = 1               # Thinner connections
 
 # Initialize pynput controllers
 kb_controller = keyboard.Controller()
@@ -43,7 +45,7 @@ except Exception as e:
 # Queue for async command processing
 command_queue = queue.Queue()
 
-# Gesture recognition class with advanced features
+# Gesture recognition class
 class GestureController:
     def __init__(self):
         self.prev_frame_time = time.time()
@@ -69,24 +71,28 @@ class GestureController:
         return dx, dy
 
     def move_cursor(self, hand_x, hand_y, frame_width, frame_height):
-        """Move cursor with enhanced smoothing for stability."""
-        target_x = int(np.interp(hand_x, [0, frame_width], [-50, SCREEN_WIDTH + 50]))
-        target_y = int(np.interp(hand_y, [0, frame_height], [-50, SCREEN_HEIGHT + 50]))
+        """Fixed cursor movement with debug output."""
+        x_min, x_max = 200, frame_width - 200  # 240 pixels wide
+        y_min, y_max = 100, frame_height - 100  # 280 pixels tall
+
+        target_x = np.interp(hand_x, [x_min, x_max], [0, SCREEN_WIDTH])
+        target_y = np.interp(hand_y, [y_min, y_max], [0, SCREEN_HEIGHT])
 
         smoothed_x = target_x
         smoothed_y = target_y
 
         if self.prev_cursor_pos is not None:
             curr_x, curr_y = self.prev_cursor_pos
-            # Stronger smoothing: 80% previous position, 20% new position
-            smoothed_x = int(curr_x * 0.8 + target_x * 0.2)
-            smoothed_y = int(curr_y * 0.8 + target_y * 0.2)
+            smoothed_x = int(curr_x * 0.4 + target_x * 0.6)
+            smoothed_y = int(curr_y * 0.4 + target_y * 0.6)
 
         self.prev_cursor_pos = (smoothed_x, smoothed_y)
 
         final_x = min(max(smoothed_x, 0), SCREEN_WIDTH - 1)
         final_y = min(max(smoothed_y, 0), SCREEN_HEIGHT - 1)
         mouse_controller.position = (final_x, final_y)
+
+        return f"Hand: ({int(hand_x)}, {int(hand_y)}), Cursor: ({int(final_x)}, {int(final_y)})"
 
     def calculate_pinch_distance(self, thumb_tip, index_tip, frame_width):
         return np.hypot(
@@ -161,7 +167,7 @@ class GestureController:
         wrist = landmarks[0]
 
         finger_states = [
-            1 if thumb_tip.x < thumb_ip.x else 0,
+            1 if thumb_tip.x < thumb_ip.x else 0,  # Thumb open if tip left of IP
             1 if self.is_finger_open(index_tip, index_pip, index_mcp) else 0,
             1 if self.is_finger_open(middle_tip, middle_pip, middle_mcp) else 0,
             1 if self.is_finger_open(ring_tip, ring_pip, ring_mcp) else 0,
@@ -177,23 +183,24 @@ class GestureController:
             'fingers': finger_states,
             'pos': curr_pos,
             'prev_pos': curr_pos,
-            'gesture': "Tracking"
+            'gesture': "None"  # Default to None for clarity
         }
 
         current_time = time.time()
         debounce = hand_id not in self.debounce_time or (current_time - self.debounce_time.get(hand_id, 0)) > self.debounce_delay
 
-        if finger_states == [0, 1, 0, 0, 0]:  # Index finger up (Tracking only)
+        # Strict gesture checks to prevent overlap
+        if finger_states == [0, 1, 0, 0, 0]:  # Only index finger up
             self.hand_data[hand_id]['gesture'] = "Tracking"
-            self.move_cursor(curr_pos[0], curr_pos[1], frame_shape[1], frame_shape[0])
+            return self.move_cursor(curr_pos[0], curr_pos[1], frame_shape[1], frame_shape[0])
 
-        elif finger_states == [0, 1, 1, 0, 0]:  # Index + Middle (Click)
+        elif finger_states == [0, 1, 1, 0, 0]:  # Index + Middle
             self.hand_data[hand_id]['gesture'] = "Click"
             if debounce:
                 command_queue.put((hand_id, "Click"))
                 self.debounce_time[hand_id] = current_time
 
-        elif finger_states == [1, 1, 0, 0, 0]:  # Pinch
+        elif finger_states == [1, 1, 0, 0, 0]:  # Thumb + Index (Pinch)
             pinch_dist = self.calculate_pinch_distance(thumb_tip, index_tip, frame_shape[1])
             if pinch_dist < 50:
                 self.hand_data[hand_id]['gesture'] = "Pinch In"
@@ -206,55 +213,55 @@ class GestureController:
                     command_queue.put((hand_id, "Pinch Out"))
                     self.debounce_time[hand_id] = current_time
 
-        elif finger_states == [0, 0, 1, 0, 0] and abs(dx) > 50:  # Swipe
+        elif finger_states == [0, 0, 1, 0, 0] and abs(dx) > 50:  # Middle finger swipe
             self.hand_data[hand_id]['gesture'] = "Swipe Left" if dx < 0 else "Swipe Right"
             if debounce:
                 command_queue.put((hand_id, "Swipe Left" if dx < 0 else "Swipe Right"))
                 self.debounce_time[hand_id] = current_time
 
-        elif finger_states == [1, 1, 1, 1, 1]:  # Volume Up
+        elif finger_states == [1, 1, 1, 1, 1]:  # All fingers up
             self.hand_data[hand_id]['gesture'] = "Volume Up"
             if debounce:
                 command_queue.put((hand_id, "Volume Up"))
                 self.debounce_time[hand_id] = current_time
 
-        elif finger_states == [0, 0, 0, 0, 0]:  # Volume Down
+        elif finger_states == [0, 0, 0, 0, 0]:  # All fingers down
             self.hand_data[hand_id]['gesture'] = "Volume Down"
             if debounce:
                 command_queue.put((hand_id, "Volume Down"))
                 self.debounce_time[hand_id] = current_time
 
-        elif finger_states == [0, 0, 0, 0, 1]:  # App Switch
+        elif finger_states == [0, 0, 0, 0, 1]:  # Pinky up
             self.hand_data[hand_id]['gesture'] = "App Switch"
             if debounce:
                 command_queue.put((hand_id, "App Switch"))
                 self.debounce_time[hand_id] = current_time
 
-        elif finger_states == [0, 1, 0, 0, 1]:  # Maximize Window
+        elif finger_states == [0, 1, 0, 0, 1]:  # Index + Pinky
             self.hand_data[hand_id]['gesture'] = "Maximize Window"
             if debounce:
                 command_queue.put((hand_id, "Maximize Window"))
                 self.debounce_time[hand_id] = current_time
 
-        elif finger_states == [0, 0, 1, 1, 0]:  # Minimize Window
+        elif finger_states == [0, 0, 1, 1, 0]:  # Middle + Ring
             self.hand_data[hand_id]['gesture'] = "Minimize Window"
             if debounce:
                 command_queue.put((hand_id, "Minimize Window"))
                 self.debounce_time[hand_id] = current_time
 
-        elif finger_states == [1, 0, 1, 0, 0]:  # Play/Pause
+        elif finger_states == [1, 0, 1, 0, 0]:  # Thumb + Middle
             self.hand_data[hand_id]['gesture'] = "Play/Pause"
             if debounce:
                 command_queue.put((hand_id, "Play/Pause"))
                 self.debounce_time[hand_id] = current_time
 
-        elif finger_states == [1, 0, 0, 1, 0]:  # Next Track
+        elif finger_states == [1, 0, 0, 1, 0]:  # Thumb + Ring
             self.hand_data[hand_id]['gesture'] = "Next Track"
             if debounce:
                 command_queue.put((hand_id, "Next Track"))
                 self.debounce_time[hand_id] = current_time
 
-        elif finger_states == [0, 1, 1, 1, 0]:  # Screenshot
+        elif finger_states == [0, 1, 1, 1, 0]:  # Index + Middle + Ring
             self.hand_data[hand_id]['gesture'] = "Screenshot"
             if debounce:
                 command_queue.put((hand_id, "Screenshot"))
@@ -289,13 +296,14 @@ def main():
             if results.multi_hand_landmarks:
                 for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
                     hand_id = idx
-                    # Draw landmarks with custom colors and thickness
+                    landmark_color = LANDMARK_COLOR_HAND_0 if hand_id == 0 else LANDMARK_COLOR_HAND_1
+                    connection_color = CONNECTION_COLOR_HAND_0 if hand_id == 0 else CONNECTION_COLOR_HAND_1
                     mp_drawing.draw_landmarks(
                         frame,
                         hand_landmarks,
                         mp_hands.HAND_CONNECTIONS,
-                        mp_drawing.DrawingSpec(color=LANDMARK_COLOR, thickness=LANDMARK_THICKNESS, circle_radius=4),
-                        mp_drawing.DrawingSpec(color=CONNECTION_COLOR, thickness=CONNECTION_THICKNESS)
+                        mp_drawing.DrawingSpec(color=landmark_color, thickness=LANDMARK_THICKNESS, circle_radius=2),
+                        mp_drawing.DrawingSpec(color=connection_color, thickness=CONNECTION_THICKNESS)
                     )
                     gesture = controller.recognize_gesture(hand_landmarks, frame.shape, hand_id)
                     
@@ -304,6 +312,9 @@ def main():
                     cv2.circle(frame, pos, 10, (255, 0, 0) if hand_id == 0 else (0, 255, 0), -1)
                     cv2.putText(frame, f"Hand {hand_id}: {gesture} {fingers}", (pos[0] - 50, pos[1] - 20),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    if gesture.startswith("Hand"):  # Display cursor debug info
+                        cv2.putText(frame, gesture, (pos[0] - 50, pos[1] - 40),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
             fps = controller.calculate_fps()
             cv2.putText(frame, f"FPS: {int(fps)}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
