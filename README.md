@@ -1,5 +1,5 @@
 
-# GestureFlow: An Advanced Hand Gesture Control System
+# GestureFlow – AI-Based Hand Gesture Automation System
 
 GestureFlow is a real-time computer vision–based system that enables users to control their computer using **hand gestures**.
 By leveraging **MediaPipe**, **OpenCV**, and **Python automation libraries**, the system replaces traditional input devices like a mouse and keyboard with natural hand movements.
