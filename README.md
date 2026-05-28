@@ -57,8 +57,8 @@ By leveraging **MediaPipe**, **OpenCV**, and **Python automation libraries**, th
 
 ### Clone the Repository
 ```bash
-git clone https://github.com/Naveen-YN/GestureFlow-An-Advanced-Hand-Gesture-Control-System.git
-cd GestureFlow-An-Advanced-Hand-Gesture-Control-System
+git clone https://github.com/Naveen-YN/GestureFlow-AI-Based-Hand-Gesture-Automation-System.git
+cd GestureFlow-AI-Based-Hand-Gesture-Automation-System
 ```
 
 ### Install Dependencies
